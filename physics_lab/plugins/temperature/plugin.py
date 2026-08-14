@@ -22,7 +22,7 @@ class TemperatureConfigPage(QWidget):
         self.sample_count.setValue(int(project.plugin_config.get("sample_count", 30)))
         form = QFormLayout()
         form.addRow("采样数量", self.sample_count)
-        note = QLabel("模拟温度传感器将返回一组有周期波动的温度数据。")
+        note = QLabel("温度设备将采集一组温度数据并计算统计结果。")
         note.setObjectName("muted")
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("温度采集参数"))
@@ -86,6 +86,7 @@ class TemperatureResultPage(QWidget):
             f"最高温度：{result.get('maximum', '--')} °C\n"
             f"采样数量：{result.get('points', '--')}"
         )
+        self.raw_data.refresh()
 
     def recalculate(self) -> None:
         values = self.repository.read_raw_samples(self.project, "raw/temperature_samples.jsonl", "temperature")

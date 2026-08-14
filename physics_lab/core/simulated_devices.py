@@ -4,13 +4,15 @@ import math
 import time
 from typing import Any, Callable
 
+from physics_lab.devices.protocol import CURRENT_PROTOCOL_VERSION
+
 
 class SimulatedPendulumDevice:
     device_id = "simulated-pendulum-01"
     device_type = "esp32s3_board"
     capabilities = frozenset({"period_sampling"})
     firmware = "pendulum-esp32s3-sim"
-    protocol_version = 1
+    protocol_version = CURRENT_PROTOCOL_VERSION
     channels = frozenset({"period_sensor"})
 
     def __init__(self) -> None:
@@ -69,7 +71,7 @@ class SimulatedTemperatureDevice:
     device_type = "esp32s3_board"
     capabilities = frozenset({"temperature_sampling"})
     firmware = "temperature-esp32s3-sim"
-    protocol_version = 1
+    protocol_version = CURRENT_PROTOCOL_VERSION
     channels = frozenset({"temperature_sensor"})
 
     def __init__(self) -> None:

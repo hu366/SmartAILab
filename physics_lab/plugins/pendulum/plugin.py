@@ -91,6 +91,7 @@ class PendulumResultPage(QWidget):
             f"重力加速度：{result.get('gravity', '--')} m/s²\n"
             f"采集点数：{result.get('points', '--')}"
         )
+        self.raw_data.refresh()
 
     def recalculate(self) -> None:
         values = self.repository.read_raw_samples(self.project, "raw/period_samples.jsonl", "period")

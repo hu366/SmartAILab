@@ -8,6 +8,9 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QWidget
 
 
+PROJECT_SCHEMA_VERSION = 2
+
+
 @dataclass
 class GeneralConfig:
     name: str
@@ -21,6 +24,7 @@ class ExperimentProject:
     plugin_id: str
     plugin_version: str
     general: GeneralConfig
+    schema_version: int = PROJECT_SCHEMA_VERSION
     status: str = "draft"
     current_step: str = "plugin-config"
     plugin_config: dict[str, Any] = field(default_factory=dict)

@@ -54,7 +54,10 @@ def test_serial_pendulum_handshake_and_samples() -> None:
 
     assert values == [2.0, 2.1]
     assert samples == [(0, 2.0), (1, 2.1)]
-    assert transport.sent == [{"command": "hello"}, {"command": "collect_periods", "count": 2}]
+    assert transport.sent == [
+        {"command": "hello", "protocol": 1},
+        {"command": "collect_periods", "count": 2},
+    ]
     device.disconnect()
 
 
@@ -75,3 +78,11 @@ def test_serial_pendulum_retries_handshake() -> None:
 
     assert transport.open_attempts == 2
     assert device.connected
+
+
+def test_serial_pendulum_rejects_unsupported_protocol() -> None:
+    transport = FakeTransport([{"type": "hello", "experiment": "pendulum", "protocol": 2}])
+    device = SerialPendulumDevice("COM7", transport)
+
+    with pytest.raises(RuntimeError, match="Unsupported protocol version: 2"):
+        device.connect()

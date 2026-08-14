@@ -1,20 +1,20 @@
-/* Physics Lab pendulum simulator for ESP32-S3 boards.
+/* Physics Lab temperature simulator for ESP32-S3 boards.
  * Protocol: newline-delimited JSON at 115200 baud.
  */
 
 #include <Arduino.h>
 #include <math.h>
 
-const char *DEVICE_ID = "esp32s3-pendulum-sim-01";
+const char *DEVICE_ID = "esp32s3-temperature-sim-01";
 const int PROTOCOL_VERSION = 1;
-const int SAMPLE_COUNT = 101;
+const int DEFAULT_SAMPLE_COUNT = 30;
 bool stopRequested = false;
 bool pauseRequested = false;
 
 void sendHello() {
   Serial.print("{\"type\":\"hello\",\"device_id\":\"");
   Serial.print(DEVICE_ID);
-  Serial.print("\",\"experiment\":\"pendulum\",\"firmware\":\"pendulum-esp32s3-sim\",\"version\":\"1.0.0\",\"protocol\":");
+  Serial.print("\",\"experiment\":\"temperature\",\"firmware\":\"temperature-esp32s3-sim\",\"version\":\"1.0.0\",\"protocol\":");
   Serial.print(PROTOCOL_VERSION);
   Serial.println("}");
 }
@@ -25,10 +25,25 @@ void sendError(const char *message) {
   Serial.println("\"}");
 }
 
-void collectPeriods() {
+int requestedSampleCount(const String &line) {
+  const String marker = "\"count\":";
+  int start = line.indexOf(marker);
+  if (start < 0) {
+    return DEFAULT_SAMPLE_COUNT;
+  }
+  start += marker.length();
+  int end = line.indexOf(',', start);
+  if (end < 0) {
+    end = line.indexOf('}', start);
+  }
+  int count = line.substring(start, end).toInt();
+  return constrain(count, 1, 200);
+}
+
+void collectTemperature(int sampleCount) {
   stopRequested = false;
   pauseRequested = false;
-  for (int index = 0; index < SAMPLE_COUNT; index++) {
+  for (int index = 0; index < sampleCount; index++) {
     if (Serial.available() > 0) {
       String command = Serial.readStringUntil('\n');
       command.trim();
@@ -49,13 +64,13 @@ void collectPeriods() {
       index--;
       continue;
     }
-    float period = 2.0f + 0.18f * sinf(index / 8.0f);
+    float temperature = 23.5f + 1.8f * sinf(index / 4.0f);
     Serial.print("{\"type\":\"sample\",\"index\":");
     Serial.print(index);
-    Serial.print(",\"period\":");
-    Serial.print(period, 6);
+    Serial.print(",\"temperature\":");
+    Serial.print(temperature, 6);
     Serial.println("}");
-    delay(18);
+    delay(30);
   }
   Serial.println("{\"type\":\"done\"}");
 }
@@ -63,8 +78,8 @@ void collectPeriods() {
 void handleCommand(const String &line) {
   if (line.indexOf("\"command\":\"hello\"") >= 0) {
     sendHello();
-  } else if (line.indexOf("\"command\":\"collect_periods\"") >= 0) {
-    collectPeriods();
+  } else if (line.indexOf("\"command\":\"collect_temperature\"") >= 0) {
+    collectTemperature(requestedSampleCount(line));
   } else if (line.indexOf("\"command\":\"stop\"") >= 0) {
     stopRequested = true;
   } else if (line.indexOf("\"command\":\"pause\"") >= 0) {

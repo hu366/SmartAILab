@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QStyle,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -25,7 +26,11 @@ from physics_lab.core.contracts import ExperimentProject, GeneralConfig, Platfor
 from physics_lab.core.cancellation import CancellationToken
 from physics_lab.core.project_logger import ProjectLogger
 from physics_lab.core.plugin_manager import PluginManager
-from physics_lab.core.project_repository import ProjectRepository
+from physics_lab.core.project_repository import (
+    ProjectAlreadyExistsError,
+    ProjectMigrationError,
+    ProjectRepository,
+)
 from physics_lab.ui.styles import APP_STYLE
 from physics_lab.ui.log_dialog import LogDialog
 
@@ -202,7 +207,7 @@ class WorkflowPage(QWidget):
         self.logger = ProjectLogger(repository, project)
         self.workflow = plugin.create_workflow(project, services)
         self.page_ids = self.workflow.page_ids()
-        self.index = 0
+        self.index = self._initial_page_index()
         self.thread: QThread | None = None
         self.worker: Worker | None = None
         self.run_terminal = False
@@ -210,9 +215,9 @@ class WorkflowPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(48, 34, 48, 34)
         heading = QHBoxLayout()
-        self.title = QLabel(self.workflow.page_title(self.page_ids[0]))
+        self.title = QLabel(self.workflow.page_title(self.page_ids[self.index]))
         self.title.setObjectName("pageTitle")
-        self.status = QLabel("草稿")
+        self.status = QLabel(self._status_text())
         self.status.setObjectName("muted")
         heading.addWidget(self.title)
         heading.addStretch()
@@ -225,6 +230,7 @@ class WorkflowPage(QWidget):
         self.stack = QStackedWidget()
         for page_id in self.page_ids:
             self.stack.addWidget(self.workflow.create_page(page_id, self))
+        self.stack.setCurrentIndex(self.index)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -254,6 +260,22 @@ class WorkflowPage(QWidget):
         layout.addLayout(actions)
         self.refresh_controls()
 
+    def _initial_page_index(self) -> int:
+        if self.project.current_step in self.page_ids:
+            return self.page_ids.index(self.project.current_step)
+        if self.project.status == "completed" and "result" in self.page_ids:
+            return self.page_ids.index("result")
+        return 0
+
+    def _status_text(self) -> str:
+        return {
+            "draft": "草稿",
+            "running": "上次运行中断，可继续采集",
+            "failed": "上次实验失败，可重试",
+            "cancelled": "实验已取消，可重新采集",
+            "completed": "已完成",
+        }.get(self.project.status, self.project.status)
+
     def refresh_controls(self) -> None:
         self.title.setText(self.workflow.page_title(self.page_ids[self.index]))
         self.progress.setText(f"步骤 {self.index + 1} / {len(self.page_ids)}")
@@ -279,6 +301,8 @@ class WorkflowPage(QWidget):
         if self.index > 0:
             self.index -= 1
             self.stack.setCurrentIndex(self.index)
+            self.project.current_step = self.page_ids[self.index]
+            self.repository.save(self.project)
             self.refresh_controls()
 
     def next(self) -> None:
@@ -291,6 +315,8 @@ class WorkflowPage(QWidget):
         if self.index < len(self.page_ids) - 1:
             self.index += 1
             self.stack.setCurrentIndex(self.index)
+            self.project.current_step = self.page_ids[self.index]
+            self.repository.save(self.project)
             self.refresh_controls()
             return
         self.project.status = "completed"
@@ -344,6 +370,22 @@ class WorkflowPage(QWidget):
             self.status.setText("正在取消实验")
             self.progress.setText("正在停止采集并释放设备...")
             self.refresh_controls()
+
+    def stop_for_shutdown(self, timeout_ms: int = 5000) -> bool:
+        """Stop an active worker before the application process exits."""
+        if self.thread is None:
+            return True
+        if self.worker is not None:
+            self.worker.cancel()
+        self.thread.quit()
+        if not self.thread.wait(timeout_ms):
+            return False
+        self.run_terminal = True
+        self.project.status = "cancelled"
+        self.project.current_step = self.page_ids[self.index]
+        self.repository.save(self.project)
+        self.logger.warning("experiment_cancelled_on_shutdown", "应用关闭前已停止实验")
+        return True
 
     def toggle_pause(self) -> None:
         if self.worker is None or self.run_terminal:
@@ -440,6 +482,14 @@ class MainWindow(QMainWindow):
         self.history = QListWidget()
         self.history.itemClicked.connect(self.open_history)
         side.addWidget(self.history, 1)
+        self.delete_button = QPushButton("删除选中实验")
+        self.delete_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+        self.delete_button.setEnabled(False)
+        self.history.itemSelectionChanged.connect(
+            lambda: self.delete_button.setEnabled(self.history.currentItem() is not None)
+        )
+        self.delete_button.clicked.connect(self.delete_selected_project)
+        side.addWidget(self.delete_button)
         footer = QLabel("本地项目存储")
         footer.setObjectName("eyebrow")
         side.addWidget(footer)
@@ -448,17 +498,83 @@ class MainWindow(QMainWindow):
         root.addWidget(self.content, 1)
         self.setCentralWidget(shell)
 
+    def closeEvent(self, event) -> None:
+        if self.current_workflow is not None and not self.current_workflow.stop_for_shutdown():
+            QMessageBox.warning(
+                self,
+                "实验仍在停止",
+                "设备尚未完成停止，请稍后再次关闭窗口。",
+            )
+            event.ignore()
+            return
+        event.accept()
+
+    def _has_active_run(self) -> bool:
+        workflow = self.current_workflow
+        return workflow is not None and workflow.thread is not None and not workflow.run_terminal
+
+    def _block_navigation_if_running(self) -> bool:
+        if not self._has_active_run():
+            return False
+        QMessageBox.warning(
+            self,
+            "实验正在进行",
+            "当前实验正在采集，请先取消实验并等待设备释放后再切换页面。",
+        )
+        return True
+
     def show_history(self) -> None:
+        projects = self.refresh_history_list()
+        if projects:
+            self.show_welcome()
+        else:
+            self.show_new_experiment()
+
+    def refresh_history_list(self) -> list[ExperimentProject]:
         self.history.clear()
         projects = self.repository.list_projects()
         for project in projects:
             item = QListWidgetItem(f"{project.general.name}\n{project.general.number} · {project.status}")
             item.setData(Qt.ItemDataRole.UserRole, project.project_id)
             self.history.addItem(item)
-        if projects:
-            self.show_welcome()
+        self.delete_button.setEnabled(False)
+        return projects
+
+    def delete_selected_project(self) -> None:
+        item = self.history.currentItem()
+        if item is None:
+            return
+        project_id = str(item.data(Qt.ItemDataRole.UserRole))
+        project = self.repository.load(project_id)
+        if (
+            self.current_workflow is not None
+            and self.current_workflow.project.project_id == project_id
+            and self.current_workflow.thread is not None
+        ):
+            QMessageBox.warning(self, "无法删除", "实验正在运行，请先取消并等待设备释放。")
+            return
+        answer = QMessageBox.question(
+            self,
+            "确认删除实验",
+            f"确定删除实验“{project.general.name}”（编号：{project.general.number}）吗？\n\n"
+            "项目数据、原始数据和日志都会被删除，且无法恢复。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.repository.delete(project_id)
+        except (OSError, ValueError, FileNotFoundError) as exc:
+            QMessageBox.critical(self, "删除失败", str(exc))
+            return
+        is_current = self.current_workflow is not None and self.current_workflow.project.project_id == project_id
+        if is_current:
+            self.current_workflow = None
+            self.clear_content()
+            self.show_history()
         else:
-            self.show_new_experiment()
+            self.refresh_history_list()
 
     def clear_content(self) -> None:
         while self.content.count():
@@ -472,6 +588,8 @@ class MainWindow(QMainWindow):
         self.content.setCurrentIndex(0)
 
     def show_new_experiment(self) -> None:
+        if self._block_navigation_if_running():
+            return
         self.clear_content()
         page = NewExperimentPage(self.plugin_manager.all(), self.plugin_manager.issues)
         page.plugin_selected.connect(self.show_general_config)
@@ -488,17 +606,41 @@ class MainWindow(QMainWindow):
         self.content.setCurrentIndex(0)
 
     def create_project(self, plugin, config: GeneralConfig) -> None:
-        project = self.repository.create(plugin.plugin_id, plugin.version, config)
+        try:
+            project = self.repository.create(plugin.plugin_id, plugin.version, config)
+        except ProjectAlreadyExistsError:
+            QMessageBox.warning(
+                self,
+                "实验编号已存在",
+                f"实验编号“{config.number}”已经存在，请更换一个编号。",
+            )
+            return
+        except ValueError as exc:
+            QMessageBox.warning(self, "实验编号无效", str(exc))
+            return
         self.show_history()
         self.open_project(plugin, project)
 
     def open_history(self, item: QListWidgetItem) -> None:
-        project = self.repository.load(item.data(Qt.ItemDataRole.UserRole))
+        if self._block_navigation_if_running():
+            return
+        try:
+            project = self.repository.load(item.data(Qt.ItemDataRole.UserRole))
+        except ProjectMigrationError as exc:
+            QMessageBox.warning(self, "项目版本不兼容", str(exc))
+            return
         try:
             plugin = self.plugin_manager.get(project.plugin_id)
         except KeyError:
             QMessageBox.warning(self, "插件不可用", f"找不到插件：{project.plugin_id}")
             return
+        if project.plugin_version != plugin.version:
+            QMessageBox.information(
+                self,
+                "插件版本提示",
+                f"该项目保存时使用插件 v{project.plugin_version}，当前插件为 v{plugin.version}。\n"
+                "打开前请确认实验参数和结果计算仍然兼容。",
+            )
         self.open_project(plugin, project)
 
     def open_project(self, plugin, project: ExperimentProject) -> None:

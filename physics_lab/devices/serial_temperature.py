@@ -7,28 +7,23 @@ from physics_lab.devices.protocol import CURRENT_PROTOCOL_VERSION, validate_prot
 from physics_lab.devices.serial_transport import SerialTransport
 
 
-class DeviceCompatibilityError(RuntimeError):
-    """The connected board is reachable but cannot run this experiment."""
+class TemperatureDeviceCompatibilityError(RuntimeError):
+    """The connected board is reachable but cannot run the temperature experiment."""
 
 
-class SerialPendulumDevice:
-    """Pendulum device adapter for the newline-JSON ESP32 firmware."""
-
+class SerialTemperatureDevice:
     device_type = "esp32s3_board"
-    capabilities = frozenset({"period_sampling"})
+    capabilities = frozenset({"temperature_sampling"})
     firmware = ""
     protocol_version = CURRENT_PROTOCOL_VERSION
-    channels = frozenset({"period_sensor"})
+    channels = frozenset({"temperature_sensor"})
 
     def __init__(self, port: str, transport: SerialTransport | None = None) -> None:
         self.port = port
         self.device_id = f"serial:{port}"
         self.transport = transport or SerialTransport(port)
         self.connected = False
-        self.identity: dict[str, Any] = {
-            "transport": "serial",
-            "port": port,
-        }
+        self.identity: dict[str, Any] = {"transport": "serial", "port": port}
 
     @property
     def metadata(self) -> dict[str, Any]:
@@ -47,20 +42,24 @@ class SerialPendulumDevice:
                 self.transport.send_json({"command": "hello", "protocol": CURRENT_PROTOCOL_VERSION})
                 response = self.transport.read_json()
                 if response.get("type") != "hello":
-                    raise DeviceCompatibilityError(f"Unexpected device handshake response: {response}")
-                if response.get("experiment") != "pendulum":
-                    raise DeviceCompatibilityError(f"Device is for '{response.get('experiment')}', not 'pendulum'")
+                    raise TemperatureDeviceCompatibilityError(
+                        f"Unexpected device handshake response: {response}"
+                    )
+                if response.get("experiment") != "temperature":
+                    raise TemperatureDeviceCompatibilityError(
+                        f"Device is for '{response.get('experiment')}', not 'temperature'"
+                    )
                 try:
                     protocol_version = validate_protocol_version(response.get("protocol"))
                 except ValueError as exc:
-                    raise DeviceCompatibilityError(str(exc)) from exc
+                    raise TemperatureDeviceCompatibilityError(str(exc)) from exc
                 self.identity.update(response)
                 self.device_id = str(response.get("device_id", self.device_id))
                 self.firmware = str(response.get("firmware", ""))
                 self.protocol_version = protocol_version
                 self.connected = True
                 return
-            except DeviceCompatibilityError:
+            except TemperatureDeviceCompatibilityError:
                 self.connected = False
                 self.transport.close()
                 raise
@@ -70,7 +69,7 @@ class SerialPendulumDevice:
                 self.transport.close()
                 if attempt + 1 < attempts:
                     time.sleep(retry_delay)
-        raise ConnectionError(f"Unable to connect to pendulum device on {self.port}: {last_error}") from last_error
+        raise ConnectionError(f"Unable to connect to temperature device on {self.port}: {last_error}") from last_error
 
     def reconnect(self, attempts: int = 3, retry_delay: float = 0.5) -> None:
         self.disconnect()
@@ -87,9 +86,9 @@ class SerialPendulumDevice:
         on_sample: Callable[[int, float], None] | None = None,
     ) -> list[float]:
         if not self.connected:
-            raise RuntimeError("Pendulum device is not connected")
+            raise RuntimeError("Temperature device is not connected")
         self.transport.send_json({"command": command, **(payload or {})})
-        if command != "collect_periods":
+        if command != "collect_temperature":
             return []
 
         values: list[float] = []
@@ -98,7 +97,7 @@ class SerialPendulumDevice:
             message_type = message.get("type")
             if message_type == "sample":
                 index = int(message["index"])
-                value = float(message["period"])
+                value = float(message["temperature"])
                 values.append(value)
                 if on_sample is not None:
                     try:

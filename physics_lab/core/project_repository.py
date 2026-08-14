@@ -2,11 +2,20 @@ from __future__ import annotations
 
 import json
 import csv
+import shutil
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
-from physics_lab.core.contracts import ExperimentProject, GeneralConfig
+from physics_lab.core.contracts import PROJECT_SCHEMA_VERSION, ExperimentProject, GeneralConfig
+
+
+class ProjectAlreadyExistsError(FileExistsError):
+    """Raised when an experiment number already identifies a project."""
+
+
+class ProjectMigrationError(ValueError):
+    """Raised when a project manifest cannot be migrated safely."""
 
 
 class ProjectRepository:
@@ -16,13 +25,20 @@ class ProjectRepository:
 
     def create(self, plugin_id: str, plugin_version: str, general: GeneralConfig) -> ExperimentProject:
         project_id = general.number.strip() or datetime.now().strftime("%Y%m%d-%H%M%S")
+        project_dir = self._project_dir(project_id)
+        try:
+            project_dir.mkdir(parents=True, exist_ok=False)
+        except FileExistsError as exc:
+            raise ProjectAlreadyExistsError(
+                f"Project number '{project_id}' already exists"
+            ) from exc
         project = ExperimentProject(project_id, plugin_id, plugin_version, general)
         self.save(project)
         return project
 
     def save(self, project: ExperimentProject) -> None:
         project.updated_at = datetime.now().isoformat(timespec="seconds")
-        project_dir = self.root / project.project_id
+        project_dir = self._project_dir(project.project_id)
         project_dir.mkdir(parents=True, exist_ok=True)
         for folder in ("raw", "processed", "results", "logs"):
             (project_dir / folder).mkdir(exist_ok=True)
@@ -30,6 +46,12 @@ class ProjectRepository:
         temporary = project_dir / "manifest.json.tmp"
         temporary.write_text(json.dumps(asdict(project), ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(target)
+
+    def delete(self, project_id: str) -> None:
+        project_dir = self._project_dir(project_id)
+        if not (project_dir / "manifest.json").is_file():
+            raise FileNotFoundError(f"Project '{project_id}' does not exist")
+        shutil.rmtree(project_dir)
 
     def write_raw_samples(
         self,
@@ -48,7 +70,7 @@ class ProjectRepository:
         filename: str,
         columns: tuple[str, ...] | None = None,
     ) -> None:
-        project_dir = self.root / project.project_id
+        project_dir = self._project_dir(project.project_id)
         raw_dir = project_dir / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True)
         target = raw_dir / filename
@@ -104,22 +126,85 @@ class ProjectRepository:
                 writer.writerow([row.get(column, "") for column in resolved_columns])
 
     def _project_path(self, project: ExperimentProject, relative_path: str) -> Path:
-        project_dir = (self.root / project.project_id).resolve()
+        project_dir = self._project_dir(project.project_id)
         path = (project_dir / relative_path).resolve()
         if project_dir not in path.parents:
             raise ValueError("Project artifact path escapes the project directory")
         return path
+
+    def _project_dir(self, project_id: str) -> Path:
+        root = self.root.resolve()
+        project_dir = (root / project_id).resolve()
+        if project_dir.parent != root:
+            raise ValueError("Project number must be a single directory-safe identifier")
+        return project_dir
 
     def list_projects(self) -> list[ExperimentProject]:
         projects: list[ExperimentProject] = []
         for manifest in sorted(self.root.glob("*/manifest.json"), reverse=True):
             try:
                 projects.append(self.load(manifest.parent.name))
-            except (OSError, KeyError, TypeError, json.JSONDecodeError):
+            except (OSError, KeyError, TypeError, json.JSONDecodeError, ProjectMigrationError):
                 continue
         return projects
 
     def load(self, project_id: str) -> ExperimentProject:
-        data = json.loads((self.root / project_id / "manifest.json").read_text(encoding="utf-8"))
+        data = json.loads((self._project_dir(project_id) / "manifest.json").read_text(encoding="utf-8"))
+        data, migrated = self._migrate_manifest(data, project_id)
         general = GeneralConfig(**data.pop("general"))
-        return ExperimentProject(general=general, **data)
+        project = ExperimentProject(general=general, **data)
+        if migrated:
+            self.save(project)
+        return project
+
+    @staticmethod
+    def _migrate_manifest(data: object, project_id: str) -> tuple[dict[str, object], bool]:
+        if not isinstance(data, dict):
+            raise ProjectMigrationError("Project manifest must be a JSON object")
+        migrated = False
+        data = dict(data)
+        try:
+            schema_version = int(data.get("schema_version", 1))
+        except (TypeError, ValueError) as exc:
+            raise ProjectMigrationError("Project manifest has an invalid schema_version") from exc
+        if schema_version > PROJECT_SCHEMA_VERSION:
+            raise ProjectMigrationError(
+                f"Project schema v{schema_version} is newer than supported v{PROJECT_SCHEMA_VERSION}"
+            )
+
+        defaults: dict[str, object] = {
+            "project_id": project_id,
+            "plugin_version": "0.0.0",
+            "status": "draft",
+            "current_step": "plugin-config",
+            "plugin_config": {},
+            "result": {},
+            "device_metadata": {},
+            "raw_artifacts": [],
+        }
+        for key, default in defaults.items():
+            if key not in data:
+                data[key] = default
+                migrated = True
+
+        general = data.get("general")
+        if not isinstance(general, dict):
+            raise ProjectMigrationError("Project manifest is missing a valid general configuration")
+        general = dict(general)
+        for key, default in {
+            "name": project_id,
+            "number": project_id,
+            "experiment_date": "",
+        }.items():
+            if key not in general:
+                general[key] = default
+                migrated = True
+        data["general"] = general
+
+        if data.get("project_id") != project_id:
+            data["project_id"] = project_id
+            migrated = True
+        if schema_version != PROJECT_SCHEMA_VERSION:
+            migrated = True
+        data["schema_version"] = PROJECT_SCHEMA_VERSION
+        return data, migrated

@@ -12,6 +12,7 @@ from physics_lab.core.contracts import PlatformServices
 from physics_lab.core.device_manager import DeviceManager
 from physics_lab.core.simulated_devices import SimulatedPendulumDevice, SimulatedTemperatureDevice
 from physics_lab.devices.serial_pendulum import SerialPendulumDevice
+from physics_lab.devices.serial_temperature import SerialTemperatureDevice
 from physics_lab.ui.main_window import MainWindow
 
 
@@ -30,7 +31,11 @@ def main() -> int:
         device_manager.register(SerialPendulumDevice(serial_port))
     else:
         device_manager.register(SimulatedPendulumDevice())
-    device_manager.register(SimulatedTemperatureDevice())
+    temperature_port = os.environ.get("PHYSICS_LAB_TEMPERATURE_PORT", "").strip()
+    if temperature_port:
+        device_manager.register(SerialTemperatureDevice(temperature_port))
+    else:
+        device_manager.register(SimulatedTemperatureDevice())
     services = PlatformServices(device_manager, repository)
 
     window = MainWindow(repository, plugin_manager, services)
