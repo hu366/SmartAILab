@@ -1,0 +1,42 @@
+# Physics Lab
+
+基于 PySide6 的物理实验桌面平台原型。平台提供通用实验创建流程，具体实验通过插件目录扩展。
+
+## 启动
+
+```powershell
+python -m pip install -r requirements.txt
+python app.py
+```
+
+如果 Windows 没有把 Python 加入 PATH，请使用本机 Python 解释器的完整路径运行上述命令。
+
+## 当前流程
+
+```text
+新实验 -> 选择实验插件 -> 通用配置 -> 实验参数 -> 实验操作 -> 实验结果
+```
+
+当前内置“单摆实验”和“温度采集实验”插件，实验执行阶段使用模拟设备生成数据。每个项目会保存到 `projects/<实验编号>/manifest.json`，并创建 `raw`、`processed`、`results` 和 `logs` 目录。原始数据使用插件定义的 JSONL 行结构保存；插件可以选择通用表格导出组件，也可以实现自己的图表、表格或导出格式。
+
+平台通过 `DeviceManager` 管理设备登记和独占占用。插件声明 `device_requirements`，实验工作流通过 `PlatformServices` 获取匹配设备；一个插件可以原子地申请多个不同设备。当前提供 `SimulatedPendulumDevice`；真实 Arduino 设备后续只需实现相同的设备接口，固件烧录仍由 Arduino IDE 手动完成。
+
+## 新增实验插件
+
+在 `physics_lab/plugins/<plugin_id>/plugin.py` 中提供 `get_plugin()`，返回包含以下内容的插件对象：
+
+```python
+plugin_id
+version
+display_name
+description
+create_workflow(project)
+```
+
+工作流通过 `page_ids()` 声明页面顺序，通过 `create_page()` 创建页面，通过 `run(worker)` 执行后台实验任务。平台不要求不同实验拥有相同的配置、采集或结果结构。
+
+## 测试
+
+```powershell
+python -m pytest -q
+```

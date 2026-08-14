@@ -1,0 +1,2 @@
+"""Physics Lab desktop application."""
+
