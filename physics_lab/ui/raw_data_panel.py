@@ -36,6 +36,7 @@ class RawDataPanel(QGroupBox):
         self.columns = columns
         self.recalculate_callback = recalculate
         self.status = QLabel()
+        self.status.setWordWrap(True)
         self.table = QTableWidget(0, len(columns))
         self.table.setHorizontalHeaderLabels([label for _key, label in columns])
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -71,7 +72,11 @@ class RawDataPanel(QGroupBox):
         self.status.setText(f"共 {len(rows)} 条数据{suffix}")
 
     def export_csv(self) -> None:
-        default_path = str(Path(self.project.project_id).with_suffix(".csv"))
+        number = self.project.general.number.strip() or self.project.project_id
+        invalid = '<>:"/\\|?*'
+        safe_number = "".join("_" if char in invalid else char for char in number).strip(" .")
+        safe_number = safe_number or self.project.project_id
+        default_path = str(Path(f"实验编号{safe_number}_原始数据.csv"))
         destination, _ = QFileDialog.getSaveFileName(self, "导出原始数据", default_path, "CSV 文件 (*.csv)")
         if not destination:
             return

@@ -57,7 +57,10 @@ def test_project_round_trip(tmp_path: Path) -> None:
 
 def test_duplicate_experiment_number_is_rejected(tmp_path: Path) -> None:
     repository = ProjectRepository(tmp_path / "projects")
-    repository.create("pendulum", "1.0.0", GeneralConfig("第一次实验", "2026-001", "2026-08-14"))
+    first = repository.create("pendulum", "1.0.0", GeneralConfig("第一次实验", "2026-001", "2026-08-14"))
+
+    assert repository.experiment_number_exists("2026-001")
+    assert not repository.experiment_number_exists(" 2026-001 ", exclude_project_id=first.project_id)
 
     with pytest.raises(ProjectAlreadyExistsError):
         repository.create(
@@ -69,6 +72,17 @@ def test_duplicate_experiment_number_is_rejected(tmp_path: Path) -> None:
     projects = repository.list_projects()
     assert len(projects) == 1
     assert projects[0].general.name == "第一次实验"
+
+
+def test_experiment_number_exists_detects_number_changed_to_another_project(tmp_path: Path) -> None:
+    repository = ProjectRepository(tmp_path / "projects")
+    first = repository.create("faraday", "1.0.0", GeneralConfig("第一次实验", "2026-001", "2026-08-14"))
+    second = repository.create("faraday", "1.0.0", GeneralConfig("第二次实验", "2026-002", "2026-08-14"))
+
+    second.general.number = "2026-001"
+
+    assert repository.experiment_number_exists(second.general.number, exclude_project_id=second.project_id)
+    assert not repository.experiment_number_exists(first.general.number, exclude_project_id=first.project_id)
 
 
 def test_project_number_cannot_escape_repository_root(tmp_path: Path) -> None:

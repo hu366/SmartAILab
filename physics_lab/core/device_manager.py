@@ -81,3 +81,10 @@ class DeviceManager:
             for device_id, lease in list(self._leases.items()):
                 if lease.owner == owner:
                     del self._leases[device_id]
+
+    def unregister(self, device_id: str) -> None:
+        """Remove a dynamically registered device after its lease is released."""
+        with self._lock:
+            if device_id in self._leases:
+                raise RuntimeError(f"Cannot unregister leased device: {device_id}")
+            self._devices.pop(device_id, None)

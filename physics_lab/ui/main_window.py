@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal
+from PySide6.QtCore import QObject, QThread, QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QDateEdit,
     QFormLayout,
@@ -15,11 +15,12 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QStyle,
     QStackedWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
+    QSizePolicy,
 )
 
 from physics_lab.core.contracts import ExperimentProject, GeneralConfig, PlatformServices, WorkflowWorker, today_string
@@ -93,6 +94,8 @@ class PluginCard(QFrame):
         super().__init__()
         self.plugin_id = plugin.plugin_id
         self.setObjectName("pluginCard")
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout = QVBoxLayout(self)
         icon = QLabel(plugin.icon)
         icon.setStyleSheet("font-size: 30px; color: #216bb1;")
@@ -136,8 +139,7 @@ class NewExperimentPage(QWidget):
         for plugin in plugins:
             card = PluginCard(plugin)
             card.selected.connect(self.plugin_selected)
-            cards.addWidget(card)
-        cards.addStretch()
+            cards.addWidget(card, 1)
         layout.addLayout(cards)
         layout.addStretch()
 
@@ -199,8 +201,12 @@ class GeneralConfigPage(QWidget):
 
 
 class WorkflowPage(QWidget):
+    project_saved = Signal(str)
+
     def __init__(self, repository: ProjectRepository, plugin, project: ExperimentProject, services: PlatformServices, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.repository = repository
         self.plugin = plugin
         self.project = project
@@ -212,8 +218,9 @@ class WorkflowPage(QWidget):
         self.worker: Worker | None = None
         self.run_terminal = False
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(48, 34, 48, 34)
+        self.content_layout = QVBoxLayout(self)
+        self.content_layout.setContentsMargins(28, 20, 28, 20)
+        self.content_layout.setSpacing(8)
         heading = QHBoxLayout()
         self.title = QLabel(self.workflow.page_title(self.page_ids[self.index]))
         self.title.setObjectName("pageTitle")
@@ -222,22 +229,33 @@ class WorkflowPage(QWidget):
         heading.addWidget(self.title)
         heading.addStretch()
         heading.addWidget(self.status)
-        layout.addLayout(heading)
+        self.content_layout.addLayout(heading)
 
         self.progress = QLabel()
         self.progress.setObjectName("muted")
-        layout.addWidget(self.progress)
+        self.progress.setMaximumHeight(24)
+        self.content_layout.addWidget(self.progress)
         self.stack = QStackedWidget()
         for page_id in self.page_ids:
-            self.stack.addWidget(self.workflow.create_page(page_id, self))
+            page = self.workflow.create_page(page_id, self)
+            page.setMinimumSize(0, 0)
+            page.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
+            self.stack.addWidget(page)
         self.stack.setCurrentIndex(self.index)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidget(self.stack)
-        layout.addWidget(scroll, 1)
+        # Each plugin page owns its compact layout; the workflow shell should
+        # not make the whole experiment a nested scrolling surface.
+        self.stack.setMinimumSize(0, 0)
+        self.stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
+        self.content_layout.addWidget(self.stack, 1)
 
-        actions = QHBoxLayout()
+        self.action_bar = QFrame()
+        self.action_bar.setObjectName("workflowActions")
+        self.action_bar.setMinimumHeight(48)
+        self.action_bar.setMaximumHeight(64)
+        self.action_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        actions = QHBoxLayout(self.action_bar)
+        actions.setContentsMargins(0, 8, 0, 0)
+        actions.setSpacing(8)
         self.back_button = QPushButton("上一步")
         self.pause_button = QPushButton("暂停实验")
         self.pause_button.setVisible(False)
@@ -257,8 +275,16 @@ class WorkflowPage(QWidget):
         actions.addWidget(self.log_button)
         actions.addStretch()
         actions.addWidget(self.next_button)
-        layout.addLayout(actions)
+        self.content_layout.addWidget(self.action_bar)
         self.refresh_controls()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        # Keep the content readable on normal windows without allowing large
+        # desktop margins to consume the small-window action area.
+        horizontal = max(16, min(32, int(self.width() * 0.025)))
+        vertical = max(12, min(24, int(self.height() * 0.03)))
+        self.content_layout.setContentsMargins(horizontal, vertical, horizontal, vertical)
 
     def _initial_page_index(self) -> int:
         if self.project.current_step in self.page_ids:
@@ -339,6 +365,7 @@ class WorkflowPage(QWidget):
         if callable(save_to_project):
             save_to_project(self.project)
             self.repository.save(self.project)
+            self.project_saved.emit(self.project.project_id)
         return True
 
     def start_run(self) -> None:
@@ -452,6 +479,7 @@ class MainWindow(QMainWindow):
         self.current_workflow: WorkflowPage | None = None
         self.setWindowTitle("Physics Lab")
         self.resize(1180, 760)
+        self.setMinimumSize(960, 620)
         self.setStyleSheet(APP_STYLE)
         self.build_ui()
         self.show_history()
@@ -464,12 +492,28 @@ class MainWindow(QMainWindow):
         root.setSpacing(0)
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(275)
+        self.sidebar = sidebar
+        sidebar.setMinimumWidth(220)
+        sidebar.setMaximumWidth(320)
+        sidebar.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         side = QVBoxLayout(sidebar)
+        self.sidebar_layout = side
         side.setContentsMargins(22, 26, 22, 20)
+        header = QHBoxLayout()
         brand = QLabel("PHYSICS LAB")
         brand.setObjectName("brand")
-        side.addWidget(brand)
+        self.sidebar_brand = brand
+        header.addWidget(brand)
+        self.sidebar_toggle = QToolButton()
+        self.sidebar_toggle.setObjectName("sidebarToggle")
+        self.sidebar_toggle.setAutoRaise(True)
+        self.sidebar_toggle.setFixedSize(34, 34)
+        self.sidebar_toggle.setIconSize(QSize(18, 18))
+        self.sidebar_toggle.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowLeft))
+        self.sidebar_toggle.setToolTip("折叠侧栏")
+        self.sidebar_toggle.clicked.connect(self.toggle_sidebar)
+        header.addWidget(self.sidebar_toggle)
+        side.addLayout(header)
         side.addSpacing(22)
         self.new_button = QPushButton("＋  新实验")
         self.new_button.setObjectName("sidebarAction")
@@ -493,10 +537,41 @@ class MainWindow(QMainWindow):
         footer = QLabel("本地项目存储")
         footer.setObjectName("eyebrow")
         side.addWidget(footer)
+        self.sidebar_items = [self.new_button, label, self.history, self.delete_button, footer]
+        self.sidebar_expanded = True
+        self._update_sidebar_width()
         root.addWidget(sidebar)
         self.content = QStackedWidget()
         root.addWidget(self.content, 1)
         self.setCentralWidget(shell)
+
+    def toggle_sidebar(self) -> None:
+        self.sidebar_expanded = not self.sidebar_expanded
+        self._update_sidebar_width()
+        self.sidebar_brand.setVisible(self.sidebar_expanded)
+        for widget in self.sidebar_items:
+            widget.setVisible(self.sidebar_expanded)
+        if self.sidebar_expanded:
+            self.sidebar_toggle.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowLeft))
+            self.sidebar_toggle.setToolTip("折叠侧栏")
+        else:
+            self.sidebar_toggle.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight))
+            self.sidebar_toggle.setToolTip("展开侧栏")
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_sidebar_width()
+
+    def _update_sidebar_width(self) -> None:
+        if not hasattr(self, "sidebar"):
+            return
+        if not self.sidebar_expanded:
+            self.sidebar.setFixedWidth(64)
+            self.sidebar_layout.setContentsMargins(15, 18, 15, 16)
+            return
+        self.sidebar_layout.setContentsMargins(22, 26, 22, 20)
+        width = max(220, min(300, int(self.width() * 0.21)))
+        self.sidebar.setFixedWidth(width)
 
     def closeEvent(self, event) -> None:
         if self.current_workflow is not None and not self.current_workflow.stop_for_shutdown():
@@ -646,5 +721,20 @@ class MainWindow(QMainWindow):
     def open_project(self, plugin, project: ExperimentProject) -> None:
         self.clear_content()
         self.current_workflow = WorkflowPage(self.repository, plugin, project, self.services)
+        self.current_workflow.project_saved.connect(self.refresh_history_item)
         self.content.addWidget(self.current_workflow)
         self.content.setCurrentIndex(0)
+
+    def refresh_history_item(self, project_id: str) -> None:
+        """Refresh one history entry after its project metadata is saved."""
+        for index in range(self.history.count()):
+            item = self.history.item(index)
+            if item.data(Qt.ItemDataRole.UserRole) != project_id:
+                continue
+            try:
+                project = self.repository.load(project_id)
+            except (OSError, KeyError, TypeError, ProjectMigrationError):
+                return
+            item.setText(f"{project.general.name}\n{project.general.number} · {project.status}")
+            return
+        self.refresh_history_list()

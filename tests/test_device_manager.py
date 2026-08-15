@@ -48,3 +48,16 @@ def test_device_manager_acquires_multiple_distinct_devices_atomically() -> None:
     }
     manager.release_all(leases)
     assert manager.acquire(requirement, owner="project-next").device is first
+
+
+def test_device_manager_can_unregister_dynamic_device_after_release() -> None:
+    manager = DeviceManager()
+    device = SimulatedPendulumDevice()
+    manager.register(device)
+    lease = manager.acquire(
+        DeviceRequirement("esp32s3_board", frozenset({"period_sampling"})),
+        owner="owner",
+    )
+    manager.release(lease)
+    manager.unregister(device.device_id)
+    assert manager.list_devices() == []

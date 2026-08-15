@@ -36,6 +36,18 @@ class ProjectRepository:
         self.save(project)
         return project
 
+    def experiment_number_exists(self, number: str, exclude_project_id: str = "") -> bool:
+        """Return whether an experiment number belongs to another saved project."""
+        normalized_number = number.strip()
+        if not normalized_number:
+            return False
+        excluded_id = exclude_project_id.strip()
+        return any(
+            project.project_id != excluded_id
+            and project.general.number.strip() == normalized_number
+            for project in self.list_projects()
+        )
+
     def save(self, project: ExperimentProject) -> None:
         project.updated_at = datetime.now().isoformat(timespec="seconds")
         project_dir = self._project_dir(project.project_id)
@@ -108,6 +120,35 @@ class ProjectRepository:
 
     def read_raw_samples(self, project: ExperimentProject, filename: str, value_key: str) -> list[float]:
         return [float(row[value_key]) for row in self.read_raw_rows(project, filename)]
+
+    def delete_raw_file(self, project: ExperimentProject, filename: str) -> None:
+        """Delete one plugin-owned raw artifact and update its manifest entry."""
+        path = self._project_path(project, f"raw/{filename}")
+        if path.exists():
+            path.unlink()
+        project.raw_artifacts = [
+            item for item in project.raw_artifacts if item.get("path") != f"raw/{filename}"
+        ]
+        self.save(project)
+
+    def save_plugin_template(self, plugin_id: str, template: dict[str, object]) -> None:
+        """Persist a reusable plugin configuration outside any experiment project."""
+        templates_dir = self.root / "templates"
+        templates_dir.mkdir(parents=True, exist_ok=True)
+        target = templates_dir / f"{plugin_id}.json"
+        temporary = templates_dir / f"{plugin_id}.json.tmp"
+        temporary.write_text(json.dumps(template, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(target)
+
+    def load_plugin_template(self, plugin_id: str) -> dict[str, object] | None:
+        """Load a reusable plugin configuration, if one has been saved."""
+        path = self.root / "templates" / f"{plugin_id}.json"
+        if not path.is_file():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError(f"Plugin template '{plugin_id}' must be a JSON object")
+        return data
 
     def export_raw_csv(
         self,
